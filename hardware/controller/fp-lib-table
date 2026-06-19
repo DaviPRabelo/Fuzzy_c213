@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "local_library") (type "KiCad") (uri "C:/Users/matheusr.torres/Desktop/estudo/Fuzzy_c213/hardware/local_library.pretty") (options "") (descr ""))
+)
