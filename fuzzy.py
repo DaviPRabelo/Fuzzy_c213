@@ -3,6 +3,14 @@ import skfuzzy as fuzz
 from skfuzzy import control as ctrl
 import matplotlib.pyplot as plt
 import os
+import json
+import time
+
+try:
+    import paho.mqtt.client as mqtt_client
+    _PAHO_OK = True
+except ImportError:
+    _PAHO_OK = False
 
 # salva os graficos na pasta deste script (portavel entre Windows/Linux)
 SAIDA = os.path.dirname(os.path.abspath(__file__))
@@ -121,3 +129,199 @@ axs.set_title('Superfície de Controle Fuzzy (com Ku + saturação ±100%)')
 plt.tight_layout()
 plt.savefig(os.path.join(SAIDA, 'superficie.png'), dpi=130)
 print("superficie salva")
+
+# ---- simulador MQTT ----
+# Publica telemetria no mesmo tópico e esquema JSON do firmware ESP32.
+# Use quando não houver hardware disponível para testar o dashboard.
+#
+#   Como usar:
+#     python fuzzy.py --mqtt            (setpoint padrão 45 °C)
+#     python fuzzy.py --mqtt --sp 60    (setpoint inicial 60 °C)
+
+MQTT_BROKER      = "broker.hivemq.com"
+MQTT_PORT        = 1883
+TOPIC_TELEM      = "thermal_chamber/c3_01/telemetry"
+TOPIC_SETPOINT   = "thermal_chamber/c3_01/setpoint"
+TOPIC_INFERENCE  = "thermal_chamber/c3_01/inference"
+
+UAXIS = list(range(-100, 101, 2))   # 101 pontos, passo 2
+
+_TERMS  = ['NG', 'NP', 'ZE', 'PP', 'PG']
+_MATRIX = {
+    'NG': {'NG':'RF','NP':'RF','ZE':'RF','PP':'RL','PG':'RL'},
+    'NP': {'NG':'RF','NP':'RL','ZE':'RL','PP':'RL','PG':'MA'},
+    'ZE': {'NG':'RL','NP':'RL','ZE':'MA','PP':'AL','PG':'AL'},
+    'PP': {'NG':'MA','NP':'AL','ZE':'AL','PP':'AF','PG':'AF'},
+    'PG': {'NG':'AL','NP':'AF','ZE':'AF','PP':'AF','PG':'AF'},
+}
+
+
+def compute_inference(erro_val: float, de_val: float,
+                      temp: float = None, sp_val: float = None, u_val: float = None) -> dict:
+    e = float(max(-30.0, min(30.0, erro_val)))
+    d = float(max(-5.0,  min(5.0,  de_val)))
+
+    muE = {t: float(fuzz.interp_membership(e_u,  erro[t].mf, e)) for t in _TERMS}
+    muD = {t: float(fuzz.interp_membership(de_u, dele[t].mf, d)) for t in _TERMS}
+
+    rules = []
+    max_str = 0.0
+    for et in _TERMS:
+        for dt in _TERMS:
+            s   = min(muE[et], muD[dt])
+            out = _MATRIX[et][dt]
+            rules.append({'e': et, 'd': dt, 'out': out, 's': round(s, 4)})
+            if s > max_str:
+                max_str = s
+
+    agg = []
+    for uv in UAXIS:
+        m = 0.0
+        for r in rules:
+            if r['s'] > 0:
+                mu_out  = float(fuzz.interp_membership(u_u, acao[r['out']].mf, uv))
+                clipped = min(r['s'], mu_out)
+                if clipped > m:
+                    m = clipped
+        agg.append(round(m, 4))
+
+    sim.input['erro']       = e
+    sim.input['delta_erro'] = d
+    sim.compute()
+    uc   = float(sim.output['acao'])
+    ucmd = float(max(-100.0, min(100.0, KU * uc)))
+
+    result = {
+        'erro':   round(erro_val, 2),
+        'de':     round(de_val, 2),
+        'uc':     round(uc, 2),
+        'ucmd':   round(ucmd, 1),
+        'muE':    {t: round(v, 4) for t, v in muE.items()},
+        'muD':    {t: round(v, 4) for t, v in muD.items()},
+        'rules':  rules,
+        'agg':    agg,
+        'maxStr': round(max_str, 4),
+    }
+    if temp    is not None: result['temp'] = round(float(temp), 2)
+    if sp_val  is not None: result['sp']   = round(float(sp_val), 2)
+    if u_val   is not None: result['u']    = round(float(u_val), 1)
+    return result
+
+
+def run_listener():
+    if not _PAHO_OK:
+        print("paho-mqtt não instalado. Execute:  pip install paho-mqtt")
+        return
+
+    def on_connect(client, userdata, flags, _rc):
+        print(f"[listener] conectado → ouvindo {TOPIC_TELEM}")
+        client.subscribe(TOPIC_TELEM)
+
+    def on_message(client, userdata, msg):
+        try:
+            d             = json.loads(msg.payload.decode())
+            error_c       = d.get('error_c')
+            delta_error_c = d.get('delta_error_c')
+            if error_c is None or delta_error_c is None:
+                return
+            erro_val = -float(error_c)
+            de_val   = -float(delta_error_c)
+            temp     = d.get('temp_c')
+            sp_val   = d.get('setpoint_c')
+            pwm      = d.get('pwm_pct')
+            u_val    = -float(pwm) if pwm is not None else None
+            result   = compute_inference(erro_val, de_val, temp, sp_val, u_val)
+            client.publish(TOPIC_INFERENCE, json.dumps(result))
+            print(f"[listener] T={temp}°C  SP={sp_val}°C  erro={erro_val:+.1f}  ucmd={result['ucmd']:+.0f}%")
+        except Exception as ex:
+            print(f"[listener] erro: {ex}")
+
+    client = mqtt_client.Client()
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    print("[listener] iniciado — Ctrl+C para parar")
+    try:
+        client.loop_forever()
+    except KeyboardInterrupt:
+        print("\n[listener] encerrado")
+        client.disconnect()
+
+
+def run_simulator(setpoint_inicial: float = 45.0):
+    if not _PAHO_OK:
+        print("paho-mqtt não instalado. Execute:  pip install paho-mqtt")
+        return
+
+    sp      = [float(setpoint_inicial)]
+    T       = [24.0]
+    e_prev  = [0.0]
+    uptime  = [0]
+
+    def on_connect(client, userdata, flags, rc):
+        print(f"[mqtt] conectado (rc={rc}) → publicando em {TOPIC_TELEM}")
+        client.subscribe(TOPIC_SETPOINT)
+
+    def on_message(client, userdata, msg):
+        try:
+            sp[0] = float(msg.payload.decode().strip())
+            print(f"[mqtt] novo setpoint: {sp[0]} °C")
+        except ValueError:
+            pass
+
+    client = mqtt_client.Client()
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(MQTT_BROKER, MQTT_PORT, 60)
+    client.loop_start()
+
+    print(f"[simulador] iniciado — Ctrl+C para parar\n")
+    try:
+        while True:
+            e_sp_t = sp[0] - T[0]               # SP-T (convenção fuzzy.py)
+            de     = e_sp_t - e_prev[0]
+            e_prev[0] = e_sp_t
+
+            sim.input['erro']       = float(max(-30.0, min(30.0, e_sp_t)))
+            sim.input['delta_erro'] = float(max(-5.0,  min(5.0,  de)))
+            sim.compute()
+            u = comando(sim.output['acao'])      # [-100, 100]
+
+            T[0] += 0.012 * u
+            T[0]  = max(15.0, min(85.0, T[0]))
+
+            payload = json.dumps({
+                "device_id":     "fuzzy-py-sim",
+                "temp_c":        round(T[0], 2),
+                "setpoint_c":    round(sp[0], 2),
+                "error_c":       round(T[0] - sp[0], 2),   # T-SP (convenção firmware)
+                "delta_error_c": round(-de, 2),
+                "pwm_pct":       round(max(0.0, -u), 1),   # fan speed: apenas resfriamento
+                "sensor_ok":     True,
+                "safety_mode":   False,
+                "uptime_ms":     uptime[0],
+            })
+            client.publish(TOPIC_TELEM, payload)
+            print(f"T={T[0]:.1f}°C  SP={sp[0]:.0f}°C  e={e_sp_t:+.1f}  u={u:+.0f}%")
+
+            uptime[0] += 1000
+            time.sleep(1.0)
+
+    except KeyboardInterrupt:
+        print("\n[simulador] encerrado")
+    finally:
+        client.loop_stop()
+        client.disconnect()
+
+
+if __name__ == "__main__":
+    import sys
+    if "--listen" in sys.argv:
+        run_listener()
+    elif "--mqtt" in sys.argv:
+        sp0 = 45.0
+        if "--sp" in sys.argv:
+            idx = sys.argv.index("--sp")
+            if idx + 1 < len(sys.argv):
+                sp0 = float(sys.argv[idx + 1])
+        run_simulator(setpoint_inicial=sp0)

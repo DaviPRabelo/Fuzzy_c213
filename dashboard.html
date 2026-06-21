@@ -285,9 +285,12 @@
         <section class="card setp" aria-label="Definir alvo">
           <span class="eyebrow">Definir alvo</span>
           <div class="sp-row" id="spRow">
+            <button class="sp-btn" data-sp="25"><span class="v">25°</span><span class="t">mín</span></button>
             <button class="sp-btn" data-sp="35"><span class="v">35°</span><span class="t">baixo</span></button>
-            <button class="sp-btn" data-sp="50"><span class="v">50°</span><span class="t">médio</span></button>
+            <button class="sp-btn" data-sp="45"><span class="v">45°</span><span class="t">médio</span></button>
+            <button class="sp-btn" data-sp="55"><span class="v">55°</span><span class="t">médio+</span></button>
             <button class="sp-btn" data-sp="65"><span class="v">65°</span><span class="t">alto</span></button>
+            <button class="sp-btn" data-sp="75"><span class="v">75°</span><span class="t">máx</span></button>
           </div>
         </section>
       </div>
@@ -348,13 +351,13 @@
     </section>
   </main>
 
-  <footer>broker.hivemq.com:8000 · tópico <code>inatel/c213/camara</code></footer>
+  <footer>broker.hivemq.com:8000 · tópico <code>thermal_chamber/c3_01/telemetry</code></footer>
 </div>
 
 <script>
 const BROKER="broker.hivemq.com", PORT=8000;
-const T_DATA="inatel/c213/camara/dados";   // ESP32 -> dashboard (JSON)
-const T_SP="inatel/c213/camara/setpoint";  // dashboard -> ESP32
+const T_INFER="thermal_chamber/c3_01/inference";
+const T_SP="thermal_chamber/c3_01/setpoint";
 const CID="dash_"+Math.random().toString(16).slice(2,8);
 
 const maxPts=60;
@@ -381,12 +384,6 @@ const chart=new Chart(document.getElementById("chart"),{
       tooltip:{backgroundColor:"#16222E",titleColor:"#fff",bodyColor:"#E6EDF3",cornerRadius:8,padding:10,titleFont:{family:monoFont},bodyFont:{family:monoFont}}}}
 });
 
-/* ===== Motor de inferência fuzzy Mamdani (espelha fuzzy.py) ===== */
-function ramp(x,a,b){ return a===b ? (x>=b?1:0) : (x-a)/(b-a); }
-function fall(x,c,d){ return c===d ? (x<=c?1:0) : (d-x)/(d-c); }
-function trapmf(x,p){ return Math.max(Math.min(ramp(x,p[0],p[1]),1,fall(x,p[2],p[3])),0); }
-function mf(x,p){ return p.length===4 ? trapmf(x,p) : trapmf(x,[p[0],p[1],p[1],p[2]]); }
-
 const TERMS=['NG','NP','ZE','PP','PG'];
 const E_MF={NG:[-30,-30,-20,-10],NP:[-15,-7,0],ZE:[-5,0,5],PP:[0,7,15],PG:[10,20,30,30]};
 const D_MF={NG:[-5,-5,-3,-1.5],NP:[-3,-1.2,0],ZE:[-1,0,1],PP:[0,1.2,3],PG:[1.5,3,5,5]};
@@ -398,25 +395,11 @@ const MATRIX={
   PP:{NG:'MA',NP:'AL',ZE:'AL',PP:'AF',PG:'AF'},
   PG:{NG:'AL',NP:'AF',ZE:'AF',PP:'AF',PG:'AF'}
 };
-const clampDe=v=>Math.max(-5,Math.min(5,v));
+function ramp(x,a,b){ return a===b?(x>=b?1:0):(x-a)/(b-a); }
+function fall(x,c,d){ return c===d?(x<=c?1:0):(d-x)/(d-c); }
+function trapmf(x,p){ return Math.max(Math.min(ramp(x,p[0],p[1]),1,fall(x,p[2],p[3])),0); }
+function mf(x,p){ return p.length===4?trapmf(x,p):trapmf(x,[p[0],p[1],p[1],p[2]]); }
 const UAXIS=[]; for(let x=-100;x<=100;x+=2)UAXIS.push(x);
-const U_RAW_MAX=79.06, KU=100/U_RAW_MAX;       // ganho de saida: centroide max (~79%) -> 100%
-const clampU=v=>Math.max(-100,Math.min(100,v));
-
-function infer(erro,de){
-  const e=Math.max(-30,Math.min(30,erro)), dd=clampDe(de);
-  const muE={}, muD={};
-  TERMS.forEach(t=>{muE[t]=mf(e,E_MF[t]); muD[t]=mf(dd,D_MF[t]);});
-  const rules=[]; let maxStr=0;
-  TERMS.forEach(et=>TERMS.forEach(dt=>{
-    const s=Math.min(muE[et],muD[dt]), out=MATRIX[et][dt];
-    rules.push({e:et,d:dt,out,s}); if(s>maxStr)maxStr=s;
-  }));
-  const agg=UAXIS.map(x=>{ let m=0; for(const r of rules){ if(r.s>0){ const v=Math.min(r.s,mf(x,U_MF[r.out])); if(v>m)m=v; } } return m; });
-  let n=0,den=0; agg.forEach((y,i)=>{n+=UAXIS[i]*y; den+=y;});
-  const uc=den>0?n/den:0;
-  return {muE,muD,rules,agg,uc, ucmd:clampU(KU*uc), maxStr};
-}
 
 /* ===== gráficos da inferência ===== */
 const FAINT="#C7D0D8", GRIDC="#E6ECF1", AXISC="#6B7884";
@@ -467,33 +450,34 @@ const ruleCells={};
 function outRGB(o){ return (o==="RF"||o==="RL")?"45,127,196":(o==="MA")?"24,160,122":"219,90,46"; }
 function activeTerms(mu){ return TERMS.filter(t=>mu[t]>0.01).map(t=>t+" "+mu[t].toFixed(2)).join("   ")||"—"; }
 
-function renderInference(res,erro,de){
-  chartE.data.datasets[5].data=[{x:Math.max(-30,Math.min(30,erro)),y:0},{x:Math.max(-30,Math.min(30,erro)),y:1.08}];
-  chartD.data.datasets[5].data=[{x:clampDe(de),y:0},{x:clampDe(de),y:1.08}];
+function renderInference(d){
+  const e=Math.max(-30,Math.min(30,d.erro)), de=Math.max(-5,Math.min(5,d.de));
+  chartE.data.datasets[5].data=[{x:e,y:0},{x:e,y:1.08}];
+  chartD.data.datasets[5].data=[{x:de,y:0},{x:de,y:1.08}];
   TERMS.forEach((t,i)=>{
-    const aE=res.muE[t]>0.01; chartE.data.datasets[i].borderColor=rgba(i,aE?1:.3); chartE.data.datasets[i].borderWidth=aE?3.2:1.4;
-    const aD=res.muD[t]>0.01; chartD.data.datasets[i].borderColor=rgba(i,aD?1:.3); chartD.data.datasets[i].borderWidth=aD?3.2:1.4;
+    const aE=d.muE[t]>0.01; chartE.data.datasets[i].borderColor=rgba(i,aE?1:.3); chartE.data.datasets[i].borderWidth=aE?3.2:1.4;
+    const aD=d.muD[t]>0.01; chartD.data.datasets[i].borderColor=rgba(i,aD?1:.3); chartD.data.datasets[i].borderWidth=aD?3.2:1.4;
   });
   chartE.update("none"); chartD.update("none");
-  setText("capE", activeTerms(res.muE)); setText("capD", activeTerms(res.muD));
+  setText("capE", activeTerms(d.muE)); setText("capD", activeTerms(d.muD));
 
-  chartU.data.datasets[aggDS].data=UAXIS.map((x,i)=>({x,y:res.agg[i]}));
-  chartU.data.datasets[centDS].data=[{x:res.uc,y:0},{x:res.uc,y:1.08}];
-  chartU.data.datasets[cmdDS].data=[{x:res.ucmd,y:0},{x:res.ucmd,y:1.12}];
-  chartU.data.datasets[cmdDS].borderColor=res.ucmd>=0?"#DB5A2E":"#2D7FC4";
+  chartU.data.datasets[aggDS].data=UAXIS.map((x,i)=>({x,y:d.agg[i]}));
+  chartU.data.datasets[centDS].data=[{x:d.uc,y:0},{x:d.uc,y:1.08}];
+  chartU.data.datasets[cmdDS].data=[{x:d.ucmd,y:0},{x:d.ucmd,y:1.12}];
+  chartU.data.datasets[cmdDS].borderColor=d.ucmd>=0?"#DB5A2E":"#2D7FC4";
   chartU.update("none");
-  setText("uc", (res.uc>0?"+":"")+res.uc.toFixed(1));
-  setText("ucmd", (res.ucmd>0?"+":"")+res.ucmd.toFixed(0));
+  setText("uc", (d.uc>0?"+":"")+d.uc.toFixed(1));
+  setText("ucmd", (d.ucmd>0?"+":"")+d.ucmd.toFixed(0));
 
-  res.rules.forEach(r=>{
+  d.rules.forEach(r=>{
     const c=ruleCells[r.e+"|"+r.d]; if(!c)return;
     const mu=c.querySelector(".rmu");
     if(r.s<0.01){ c.style.background="var(--surface-2)"; c.style.opacity=".45"; c.style.boxShadow="none"; mu.textContent=""; }
-    else{ c.style.background="rgba("+outRGB(r.out)+","+(0.16+0.66*r.s).toFixed(3)+")"; c.style.opacity="1"; mu.textContent=r.s.toFixed(2); c.style.boxShadow=(r.s>=res.maxStr-1e-9)?"inset 0 0 0 2px var(--ink)":"none"; }
+    else{ c.style.background="rgba("+outRGB(r.out)+","+(0.16+0.66*r.s).toFixed(3)+")"; c.style.opacity="1"; mu.textContent=r.s.toFixed(2); c.style.boxShadow=(r.s>=d.maxStr-1e-9)?"inset 0 0 0 2px var(--ink)":"none"; }
   });
 }
 
-let client, curSp=null, lastDataTs=0, erroPrev=null, demoOn=true, lastLive=0;
+let client, curSp=null, lastDataTs=0, demoOn=true, lastLive=0;
 const STALE_MS=8000;                          // sem telemetria por mais de 8s -> dados obsoletos
 
 // coage para numero finito; null se ausente/mal-tipado (null, "", boolean, "abc", NaN)
@@ -504,11 +488,11 @@ const tempPct=v=>Math.max(0,Math.min(100,(v-T_MIN)/(T_MAX-T_MIN)*100));
 
 function connect(){
   client=new Paho.MQTT.Client(BROKER,PORT,CID);
-  client.onConnectionLost=()=>{setConn(false);setTimeout(connect,3000);};   // reconecta apos queda
+  client.onConnectionLost=()=>{setConn(false);setTimeout(connect,3000);};
   client.onMessageArrived=onMsg;
   client.connect({useSSL:false,onSuccess:()=>{
     setConn(true);
-    client.subscribe(T_DATA);
+    client.subscribe(T_INFER);
   },onFailure:()=>{setConn(false);setTimeout(connect,3000);}});
 }
 function setConn(ok){
@@ -557,15 +541,9 @@ function updateAction(u){
   us.className = u>1?"chip heat":(u<-1?"chip cool":"chip");
 }
 
-// atualiza TODO o painel a partir de uma amostra (telemetria real ou demo)
-function applySample(temp,sp,erro,u,de){
+function applySample(temp,sp,erro,u){
   if(sp!=null)curSp=sp;
-  let res=null;
-  if(erro!=null){
-    if(de==null)de=(erroPrev!=null)?clampDe(erro-erroPrev):0;
-    erroPrev=erro; res=infer(erro,de);
-  }
-  const uShown=(u!=null)?u:(res?res.ucmd:null);
+  const uShown=u;
 
   if(temp!=null)setText("temp",temp.toFixed(1));
   if(sp!=null){setText("sp",sp.toFixed(0));markSp(sp);}
@@ -580,7 +558,6 @@ function applySample(temp,sp,erro,u,de){
     setText("errState", erro>0.5?"abaixo do alvo · precisa aquecer":(erro<-0.5?"acima do alvo · precisa resfriar":"estável no alvo"));
   }
   if(uShown!=null){setText("u",(uShown>0?"+":"")+uShown.toFixed(0));updateAction(uShown);}
-  if(res)renderInference(res,erro,de);
 
   if(temp!=null){
     const t=new Date().toLocaleTimeString("pt-BR",{hour12:false});
@@ -591,13 +568,16 @@ function applySample(temp,sp,erro,u,de){
   return uShown;
 }
 function onMsg(m){
-  let d; try{d=JSON.parse(m.payloadString);}catch(e){console.warn("payload MQTT ignorado (JSON invalido):",e);return;}
-  const temp=num(d.temp), sp=num(d.sp), erro=num(d.erro), u=num(d.u), de=num(d.de);
+  let d; try{d=JSON.parse(m.payloadString);}catch(e){console.warn("payload MQTT ignorado:",e);return;}
+  const temp=num(d.temp), sp=num(d.sp), erro=num(d.erro), u=num(d.ucmd);
   if(temp!=null||sp!=null||erro!=null||u!=null){
-    if(demoOn)setDemo(false);                  // chegou telemetria real -> sai do demo
+    if(demoOn)setDemo(false);
     markFresh(); lastLive=Date.now();
   }
-  applySample(temp,sp,erro,u,de);
+  applySample(temp,sp,erro,u);
+  if(d.muE&&d.muD&&d.rules&&d.agg) renderInference(d);
+  const badge=document.getElementById("inferMode");
+  if(badge){badge.textContent="ao vivo"; badge.className="chip live";}
 }
 function setText(id,v){const el=document.getElementById(id); if(el)el.textContent=v;}
 function markSp(sp){
@@ -636,13 +616,14 @@ function setDemo(on){
 }
 if(demoBtn)demoBtn.addEventListener("click",()=>setDemo(!demoOn));
 
-let demoT=24;                                   // temperatura simulada inicial
+let demoT=24;
 function demoTick(){
   if(!demoOn)return;
   const sp=curSp!=null?curSp:50;
   const erro=sp-demoT;
-  const u=applySample(demoT,sp,erro,null,null)||0;   // roda a inferencia e devolve u
-  demoT+=0.012*u + (Math.random()-0.5)*0.08;          // planta: aquece com u>0, resfria com u<0
+  const u=Math.max(-100,Math.min(100,erro*4));
+  applySample(demoT,sp,erro,u);
+  demoT+=0.012*u+(Math.random()-0.5)*0.08;
   demoT=Math.max(15,Math.min(85,demoT));
 }
 setInterval(demoTick,700);

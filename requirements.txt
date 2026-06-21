@@ -7,3 +7,5 @@ numpy>=2.0,<3
 scipy>=1.11
 scikit-fuzzy>=0.5,<0.6
 matplotlib>=3.8
+paho-mqtt>=1.6,<3
+networkx
