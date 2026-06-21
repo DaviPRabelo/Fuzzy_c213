@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Editores
+.vscode/
+.idea/
+
+# Observação: pertinencias.png e superficie.png são mantidos no repositório
+# (são entregáveis do relatório, gerados por fuzzy.py).
