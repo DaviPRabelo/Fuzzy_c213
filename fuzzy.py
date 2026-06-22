@@ -3,8 +3,17 @@ import skfuzzy as fuzz
 from skfuzzy import control as ctrl
 import matplotlib.pyplot as plt
 import os
+import sys
 import json
 import time
+
+# console do Windows (cp1252) nao imprime caracteres como -> usados nos logs;
+# reconfigura a saida para UTF-8 quando possivel (no-op em terminais que ja suportam)
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 try:
     import paho.mqtt.client as mqtt_client
@@ -138,7 +147,7 @@ print("superficie salva")
 #     python fuzzy.py --mqtt            (setpoint padrão 45 °C)
 #     python fuzzy.py --mqtt --sp 60    (setpoint inicial 60 °C)
 
-MQTT_BROKER      = "broker.hivemq.com"
+MQTT_BROKER      = "test.mosquitto.org"
 MQTT_PORT        = 1883
 TOPIC_TELEM      = "thermal_chamber/c3_01/telemetry"
 TOPIC_SETPOINT   = "thermal_chamber/c3_01/setpoint"

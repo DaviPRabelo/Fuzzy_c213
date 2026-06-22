@@ -351,11 +351,11 @@
     </section>
   </main>
 
-  <footer>broker.hivemq.com:8000 · tópico <code>thermal_chamber/c3_01/telemetry</code></footer>
+  <footer>test.mosquitto.org:8080 · tópico <code>thermal_chamber/c3_01/telemetry</code></footer>
 </div>
 
 <script>
-const BROKER="broker.hivemq.com", PORT=8000;
+const BROKER="test.mosquitto.org", PORT=8080;
 const T_INFER="thermal_chamber/c3_01/inference";
 const T_SP="thermal_chamber/c3_01/setpoint";
 const CID="dash_"+Math.random().toString(16).slice(2,8);
@@ -587,10 +587,19 @@ document.getElementById("spRow").addEventListener("click",e=>{
   const btn=e.target.closest(".sp-btn"); if(!btn)return;
   const sp=+btn.dataset.sp;
   curSp=sp;                                     // tambem comanda a simulacao em modo demo
-  if(client&&client.isConnected()){
-    const msg=new Paho.MQTT.Message(String(sp));
-    msg.destinationName=T_SP; msg.retained=true;
-    client.send(msg);
+  const conn=!!(client&&client.isConnected());
+  console.log(`[setpoint] clique sp=${sp} | client=${!!client} | conectado=${conn} | demoOn=${demoOn}`);
+  if(conn){
+    try{
+      const msg=new Paho.MQTT.Message(String(sp));
+      msg.destinationName=T_SP; msg.retained=true;
+      client.send(msg);
+      console.log(`[setpoint] PUBLICADO ${sp} em ${T_SP}`);
+    }catch(err){
+      console.error("[setpoint] FALHA ao publicar:",err);
+    }
+  }else{
+    console.warn(`[setpoint] NAO publicado: cliente MQTT desconectado (demoOn=${demoOn})`);
   }
   markSp(sp);
 });
