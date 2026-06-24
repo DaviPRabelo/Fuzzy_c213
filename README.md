@@ -27,6 +27,13 @@ com visualização em tempo real por um dashboard web via **MQTT**.
 - [Comunicação MQTT](#comunicação-mqtt)
 - [Limitações conhecidas](#limitações-conhecidas)
 
+## Integrantes
+
+| Nome | Matrícula |
+|---|---:|
+| DAVÍ PADULA RABELO | 1917 |
+| KAUÃ VICTOR GARCIA SIÉCOLA | 1887 |
+| MATHEUS RENÓ TORRES | 1954 |
 ---
 
 ## Arquitetura
